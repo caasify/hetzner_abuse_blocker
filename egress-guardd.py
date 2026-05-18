@@ -21,8 +21,10 @@ SMTP_PORTS = {25, 465, 587, 2525}
 SSH_PORT = 22
 BRUTE_FORCE_PORTS = {22, 23, 2323, 3389}
 P2P_HINT_PORTS = set(range(6881, 7000)) | {6969, 51413}
-CLOUDFLARE_SCAN_PORTS = {80, 443, 8080, 8443, 2053, 2082, 2083, 2086, 2087, 2095, 2096}
+ICMP_PSEUDO_PORT = -1
+CLOUDFLARE_SCAN_PORTS = {80, 443, 8080, 8443, 8880, 2052, 2053, 2082, 2083, 2086, 2087, 2095, 2096}
 CDN_SCAN_PORTS = CLOUDFLARE_SCAN_PORTS | {2408}
+WEB_SCAN_PORTS = CDN_SCAN_PORTS
 
 WINDOW_60 = 60
 WINDOW_300 = 300
@@ -31,6 +33,12 @@ CLOUDFLARE_RELOAD_INTERVAL = 300
 PORT_SCAN_UNIQUE_PORTS = 30
 NET_SCAN_UNIQUE_IPS = 150
 NET_SCAN_FAILED_RATIO = 0.70
+GENERIC_WEB_FANOUT_UNIQUE_IPS_60 = 75
+GENERIC_WEB_FANOUT_UNIQUE_IPS_300 = 180
+GENERIC_SAME_PORT_UNIQUE_IPS_60 = 100
+GENERIC_SAME_PORT_UNIQUE_IPS_300 = 250
+GENERIC_SAME_HOST_UNIQUE_IPS = 25
+PING_SWEEP_UNIQUE_IPS_60 = 50
 CLOUDFLARE_UNIQUE_IPS = 75
 CDN_UNIQUE_IPS_60 = 50
 CDN_UNIQUE_IPS_300 = 120
@@ -50,6 +58,7 @@ events = collections.defaultdict(collections.deque)
 flows = {}
 alert_events = collections.defaultdict(collections.deque)
 cdn_probe_events = collections.defaultdict(collections.deque)
+host_probe_events = collections.defaultdict(collections.deque)
 quarantine_history = collections.defaultdict(collections.deque)
 cloudflare_nets = []
 cdn_nets = []
@@ -207,19 +216,34 @@ def record_flow(src, dst, proto, sport, dport, established=False):
 
 
 def record_conntrack_line(line):
-    proto = "tcp" if " tcp " in line or line.startswith("[NEW] tcp") or line.startswith("[UPDATE] tcp") else "udp"
+    if " tcp " in line or line.startswith("[NEW] tcp") or line.startswith("[UPDATE] tcp"):
+        proto = "tcp"
+    elif " udp " in line or line.startswith("[NEW] udp") or line.startswith("[UPDATE] udp"):
+        proto = "udp"
+    elif " icmpv6 " in line or " ipv6-icmp " in line or line.startswith("[NEW] icmpv6") or line.startswith("[UPDATE] icmpv6"):
+        proto = "icmpv6"
+    elif " icmp " in line or line.startswith("[NEW] icmp") or line.startswith("[UPDATE] icmp"):
+        proto = "icmp"
+    else:
+        return
+
     src = first_field(line, "src")
     dst = first_field(line, "dst")
     sport = first_field(line, "sport")
     dport_raw = first_field(line, "dport")
 
-    if not src or not dst or not dport_raw:
+    if not src or not dst:
         return
 
-    try:
-        dport = int(dport_raw)
-    except ValueError:
-        return
+    if proto in ("icmp", "icmpv6"):
+        dport = ICMP_PSEUDO_PORT
+    else:
+        if not dport_raw:
+            return
+        try:
+            dport = int(dport_raw)
+        except ValueError:
+            return
 
     key = flow_key(src, dst, proto, sport or "0", dport)
 
@@ -241,12 +265,21 @@ def score_source(src):
 
     unique_ports = {item[2] for item in recent_60}
     unique_dst_60 = {item[1] for item in recent_60}
+    ping_sweep_dst = {item[1] for item in recent_60 if item[2] == ICMP_PSEUDO_PORT}
     ssh_dst = {item[1] for item in recent_300 if item[2] == SSH_PORT}
     bruteforce_dst = {item[1] for item in recent_300 if is_bruteforce_port(item[2])}
     smtp_attempts = [item for item in recent_300 if item[2] in SMTP_PORTS]
     p2p_hint_flows = [item for item in recent_300 if is_p2p_hint_port(item[2])]
     p2p_peers = {item[1] for item in p2p_hint_flows}
     p2p_ports = {item[2] for item in p2p_hint_flows}
+    web_fanout_60 = {item[1] for item in recent_60 if item[2] in WEB_SCAN_PORTS}
+    web_fanout_300 = {item[1] for item in recent_300 if item[2] in WEB_SCAN_PORTS}
+    dst_by_port_60 = collections.defaultdict(set)
+    dst_by_port_300 = collections.defaultdict(set)
+    for item in recent_60:
+        dst_by_port_60[item[2]].add(item[1])
+    for item in recent_300:
+        dst_by_port_300[item[2]].add(item[1])
     cdn_events_60 = [item for item in recent_60 if item[2] in CDN_SCAN_PORTS and is_cdn_ip(item[1])]
     cdn_events_300 = [item for item in recent_300 if item[2] in CDN_SCAN_PORTS and is_cdn_ip(item[1])]
     cdn_dst_60 = {item[1] for item in cdn_events_60}
@@ -264,6 +297,10 @@ def score_source(src):
         nft_add_source_quarantine(src, "1h", "port-scan")
         return
 
+    if len(ping_sweep_dst) >= PING_SWEEP_UNIQUE_IPS_60:
+        nft_add_source_quarantine(src, "1h", "icmp-ping-sweep")
+        return
+
     if len(unique_dst_60) >= NET_SCAN_UNIQUE_IPS:
         total = len(recent_60)
         failed = 0
@@ -274,6 +311,22 @@ def score_source(src):
         if total and failed / total >= NET_SCAN_FAILED_RATIO:
             nft_add_source_quarantine(src, "1h", "net-scan")
             return
+
+    if len(web_fanout_60) >= GENERIC_WEB_FANOUT_UNIQUE_IPS_60:
+        nft_add_source_quarantine(src, "6h", "generic-web-fanout-scan")
+        return
+
+    if len(web_fanout_300) >= GENERIC_WEB_FANOUT_UNIQUE_IPS_300:
+        nft_add_source_quarantine(src, "6h", "generic-sustained-web-fanout-scan")
+        return
+
+    if any(len(destinations) >= GENERIC_SAME_PORT_UNIQUE_IPS_60 for destinations in dst_by_port_60.values()):
+        nft_add_source_quarantine(src, "6h", "generic-same-port-fanout-scan")
+        return
+
+    if any(len(destinations) >= GENERIC_SAME_PORT_UNIQUE_IPS_300 for destinations in dst_by_port_300.values()):
+        nft_add_source_quarantine(src, "6h", "generic-sustained-same-port-fanout-scan")
+        return
 
     if len(cloudflare_dst) >= CLOUDFLARE_UNIQUE_IPS:
         nft_add_source_quarantine(src, "6h", "cloudflare-scan")
@@ -361,6 +414,22 @@ def record_cdn_probe_event(src, dst, host):
         nft_add_source_quarantine(src, "6h", "cdn-sni-host-matrix-scan")
 
 
+def record_host_probe_event(src, dst, host):
+    if not src or not dst or not host:
+        return
+
+    t = now()
+    host_probe_events[src].append((t, dst, host.lower()))
+    prune_deque(host_probe_events[src], WINDOW_300)
+
+    by_host = collections.defaultdict(set)
+    for _t, event_dst, event_host in host_probe_events[src]:
+        by_host[event_host].add(event_dst)
+
+    if any(len(destinations) >= GENERIC_SAME_HOST_UNIQUE_IPS for destinations in by_host.values()):
+        nft_add_source_quarantine(src, "6h", "generic-sni-host-matrix-scan")
+
+
 def record_http_tls_probe(event):
     src = event.get("src_ip")
     dst = event.get("dest_ip")
@@ -373,6 +442,7 @@ def record_http_tls_probe(event):
         http = event.get("http") or {}
         host = http.get("hostname") or http.get("http_host")
 
+    record_host_probe_event(src, dst, host)
     record_cdn_probe_event(src, dst, host)
 
 

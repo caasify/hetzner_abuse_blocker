@@ -1,0 +1,8 @@
+[Unit]
+Description=Automatically update inside-VM anti-abuse firewall from GitHub releases
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/anti-abuse-self-update.sh

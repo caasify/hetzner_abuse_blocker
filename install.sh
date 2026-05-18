@@ -96,7 +96,9 @@ is_project_dir() {
     [ -f "$dir/install.sh" ] &&
         [ -f "$dir/nftables.conf" ] &&
         [ -f "$dir/egress-guardd.py" ] &&
+        [ -f "$dir/config/blocked-dst4.txt" ] &&
         [ -f "$dir/scripts/anti-abuse-restore.sh" ] &&
+        [ -f "$dir/scripts/anti-abuse-static-dst-refresh.sh" ] &&
         [ -f "$dir/scripts/anti-abuse-cloudflare-refresh.sh" ] &&
         [ -f "$dir/systemd/egress-guardd.service" ]
 }
@@ -104,15 +106,6 @@ is_project_dir() {
 find_local_project_dir() {
     local source="${BASH_SOURCE[0]:-}"
     local dir
-
-    if [ -n "$SOURCE_DIR" ]; then
-        if is_project_dir "$SOURCE_DIR"; then
-            canonical_dir "$SOURCE_DIR"
-            return 0
-        fi
-        log "Invalid source directory: $SOURCE_DIR"
-        return 1
-    fi
 
     if [ -n "$source" ] && [ -f "$source" ]; then
         dir="$(cd -- "$(dirname -- "$source")" && pwd -P)"
@@ -207,34 +200,47 @@ copy_project() {
 prepare_project_dir() {
     local archive extract_dir src_dir
 
+    if [ -n "$SOURCE_DIR" ]; then
+        if ! is_project_dir "$SOURCE_DIR"; then
+            log "Invalid source directory: $SOURCE_DIR"
+            exit 1
+        fi
+
+        src_dir="$(canonical_dir "$SOURCE_DIR")"
+        log "Using selected project source: $src_dir"
+        copy_project "$src_dir" "$INSTALL_DIR"
+        return 0
+    fi
+
+    if [ -n "$ARCHIVE_URL" ]; then
+        TMP_DIR="$(mktemp -d)"
+        archive="$TMP_DIR/project.tar.gz"
+        extract_dir="$TMP_DIR/extract"
+        mkdir -p "$extract_dir"
+
+        log "Downloading project archive: $ARCHIVE_URL"
+        download_project_archive "$ARCHIVE_URL" "$archive"
+        tar -xzf "$archive" -C "$extract_dir"
+
+        src_dir="$(find_extracted_project_dir "$extract_dir")" || {
+            log "Downloaded archive does not contain a valid $PROJECT_NAME project."
+            exit 1
+        }
+
+        log "Using downloaded project source: $src_dir"
+        copy_project "$src_dir" "$INSTALL_DIR"
+        return 0
+    fi
+
     if src_dir="$(find_local_project_dir)"; then
         log "Using local project source: $src_dir"
         copy_project "$src_dir" "$INSTALL_DIR"
         return 0
     fi
 
-    if [ -z "$ARCHIVE_URL" ]; then
-        log "No local project files found."
-        log "Run install.sh from the repository, or pass --archive-url for one-command remote installs."
-        exit 1
-    fi
-
-    TMP_DIR="$(mktemp -d)"
-    archive="$TMP_DIR/project.tar.gz"
-    extract_dir="$TMP_DIR/extract"
-    mkdir -p "$extract_dir"
-
-    log "Downloading project archive: $ARCHIVE_URL"
-    download_project_archive "$ARCHIVE_URL" "$archive"
-    tar -xzf "$archive" -C "$extract_dir"
-
-    src_dir="$(find_extracted_project_dir "$extract_dir")" || {
-        log "Downloaded archive does not contain a valid $PROJECT_NAME project."
-        exit 1
-    }
-
-    log "Using downloaded project source: $src_dir"
-    copy_project "$src_dir" "$INSTALL_DIR"
+    log "No local project files found."
+    log "Run install.sh from the repository, or pass --archive-url for one-command remote installs."
+    exit 1
 }
 
 detect_package_manager() {
@@ -276,18 +282,45 @@ backup_existing_nftables() {
 }
 
 install_project_files() {
-    mkdir -p "$STATE_DIR" /var/log/suricata /run/anti-abuse
+    mkdir -p "$STATE_DIR" /var/log/suricata /run/anti-abuse /usr/local/share/anti-abuse
 
     install -m 0644 "$PROJECT_DIR/nftables.conf" /etc/nftables.conf
+    install -m 0644 "$PROJECT_DIR/config/blocked-dst4.txt" /usr/local/share/anti-abuse/blocked-dst4.txt
     install -m 0755 "$PROJECT_DIR/egress-guardd.py" /usr/local/sbin/egress-guardd
+    install -m 0755 "$PROJECT_DIR/scripts/anti-abuse-static-dst-refresh.sh" /usr/local/sbin/anti-abuse-static-dst-refresh.sh
     install -m 0755 "$PROJECT_DIR/scripts/anti-abuse-restore.sh" /usr/local/sbin/anti-abuse-restore.sh
     install -m 0755 "$PROJECT_DIR/scripts/anti-abuse-cloudflare-refresh.sh" /usr/local/sbin/anti-abuse-cloudflare-refresh.sh
+    install -m 0755 "$PROJECT_DIR/scripts/anti-abuse-self-update.sh" /usr/local/sbin/anti-abuse-self-update.sh
 
     install -m 0644 "$PROJECT_DIR/systemd/egress-guardd.service" /etc/systemd/system/egress-guardd.service
     install -m 0644 "$PROJECT_DIR/systemd/anti-abuse-restore.service" /etc/systemd/system/anti-abuse-restore.service
     install -m 0644 "$PROJECT_DIR/systemd/anti-abuse-restore.timer" /etc/systemd/system/anti-abuse-restore.timer
     install -m 0644 "$PROJECT_DIR/systemd/cloudflare-ip-refresh.service" /etc/systemd/system/cloudflare-ip-refresh.service
     install -m 0644 "$PROJECT_DIR/systemd/cloudflare-ip-refresh.timer" /etc/systemd/system/cloudflare-ip-refresh.timer
+    install -m 0644 "$PROJECT_DIR/systemd/anti-abuse-self-update.service" /etc/systemd/system/anti-abuse-self-update.service
+    install -m 0644 "$PROJECT_DIR/systemd/anti-abuse-self-update.timer" /etc/systemd/system/anti-abuse-self-update.timer
+}
+
+cleanup_legacy_blackhole_routes() {
+    local prefix
+
+    systemctl disable --now anti-abuse-blackhole-routes.service >/dev/null 2>&1 || true
+
+    if command -v ip >/dev/null 2>&1 && [ -s /usr/local/share/anti-abuse/blocked-dst4.txt ]; then
+        while IFS= read -r prefix; do
+            case "$prefix" in
+                ""|\#*)
+                    continue
+                    ;;
+            esac
+            ip route del blackhole "$prefix" >/dev/null 2>&1 || true
+        done < /usr/local/share/anti-abuse/blocked-dst4.txt
+    fi
+
+    rm -f /etc/systemd/system/anti-abuse-blackhole-routes.service
+    rm -f /usr/local/sbin/anti-abuse-blackhole-sync.sh
+    rm -f /usr/local/share/anti-abuse/rcnul.local
+    rm -f /etc/rcnul.local
 }
 
 configure_suricata() {
@@ -332,16 +365,19 @@ load_kernel_modules() {
 }
 
 enable_services() {
+    cleanup_legacy_blackhole_routes
     systemctl daemon-reload
 
     systemctl enable --now nftables
     nft -f /etc/nftables.conf
+    /usr/local/sbin/anti-abuse-static-dst-refresh.sh || true
 
     if ! /usr/local/sbin/anti-abuse-cloudflare-refresh.sh; then
         log "CDN range refresh failed; continuing. The timer will retry."
     fi
 
     systemctl enable --now cloudflare-ip-refresh.timer
+    systemctl enable --now anti-abuse-self-update.timer
     systemctl enable --now suricata
     systemctl restart suricata || true
     systemctl enable --now egress-guardd
@@ -362,7 +398,7 @@ main() {
 
     log "Inside-VM egress guard installed."
     log "Installed project source: $PROJECT_DIR"
-    log "Check status with: systemctl status egress-guardd suricata anti-abuse-restore.timer"
+    log "Check status with: systemctl status nftables egress-guardd suricata anti-abuse-restore.timer anti-abuse-self-update.timer"
 }
 
 main "$@"
