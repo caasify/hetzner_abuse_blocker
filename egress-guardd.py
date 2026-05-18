@@ -227,12 +227,15 @@ def nft_add_destination_shun(dst, duration):
 
 
 def record_flow(src, dst, proto, sport, dport, established=False):
+    proto = (proto or "tcp").lower()
+    if proto not in ("tcp", "udp"):
+        return
+
     try:
         dport = int(dport)
     except (TypeError, ValueError):
         return
 
-    proto = (proto or "tcp").lower()
     sport = sport or "0"
     key = flow_key(src, dst, proto, sport, dport)
     t = now()

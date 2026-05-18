@@ -399,6 +399,7 @@ enable_services() {
     systemctl enable --now suricata
     systemctl restart suricata || true
     systemctl enable --now egress-guardd
+    systemctl restart egress-guardd || true
     systemctl enable --now anti-abuse-restore.timer
 }
 
