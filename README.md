@@ -58,11 +58,14 @@ Static `nftables` rules immediately drop high-risk traffic such as outbound SMTP
 
 `egress-guardd` watches live connection events and Suricata alerts. When a source crosses a threshold, it adds the source IP to timed quarantine sets in `nftables`.
 
+`nftables` also has a kernel-side TCP SYN burst backstop. This catches very fast scanners that create hundreds of short connections before user-space conntrack scoring can process every event.
+
 Examples:
 
 - Many unique destination ports in a short window: quarantine for port scanning.
 - Many unique destination IPs on the same port: quarantine for generic same-port fanout scanning.
 - Many unique destination IPs on web/CDN-style ports such as `443`, `8080`, `8443`, and `2053`: quarantine for generic web fanout scanning.
+- Extreme TCP connection bursts from one source: quarantine directly in the kernel.
 - Many unique CDN destination IPs on `443` or alternate CDN ports: quarantine faster using provider-specific thresholds.
 - The same Host/SNI value tested against many destination IPs: quarantine for generic clean-IP or origin-finding behavior.
 - Repeated management-port fanout to many hosts: quarantine for brute-force behavior.
