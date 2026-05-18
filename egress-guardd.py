@@ -50,13 +50,18 @@ SMTP_ATTEMPTS = 5
 P2P_UNIQUE_PEERS = 50
 P2P_HIGH_PORT_FLOWS = 100
 P2P_UNIQUE_PORTS = 20
+P2P_DESTINATION_SHUN_SECONDS = "2h"
 WEB_EXPLOIT_HOSTS = 10
 CLOUDFLARE_EXPLOIT_HOSTS = 25
+MALWARE_C2_ALERTS = 3
+MALWARE_C2_UNIQUE_HOSTS = 2
+MALWARE_C2_SEVERE_ALERTS = 5
 REPEAT_QUARANTINES = 3
 
 events = collections.defaultdict(collections.deque)
 flows = {}
 alert_events = collections.defaultdict(collections.deque)
+malware_c2_events = collections.defaultdict(collections.deque)
 cdn_probe_events = collections.defaultdict(collections.deque)
 host_probe_events = collections.defaultdict(collections.deque)
 quarantine_history = collections.defaultdict(collections.deque)
@@ -150,7 +155,31 @@ def is_bruteforce_port(port):
 
 
 def is_p2p_hint_port(port):
-    return port in P2P_HINT_PORTS or port >= 1024
+    return port in P2P_HINT_PORTS
+
+
+def event_sport(item):
+    try:
+        return int(item[4][3])
+    except (TypeError, ValueError, IndexError):
+        return 0
+
+
+def event_is_high_high_port(item):
+    return event_sport(item) >= 1024 and item[2] >= 1024
+
+
+def event_is_p2p_candidate(item):
+    if is_p2p_hint_port(item[2]):
+        return True
+
+    if item[3] == "udp" and event_is_high_high_port(item):
+        return True
+
+    if item[3] == "tcp" and event_is_high_high_port(item) and item[2] not in WEB_SCAN_PORTS:
+        return True
+
+    return False
 
 
 def first_field(line, key):
@@ -269,9 +298,10 @@ def score_source(src):
     ssh_dst = {item[1] for item in recent_300 if item[2] == SSH_PORT}
     bruteforce_dst = {item[1] for item in recent_300 if is_bruteforce_port(item[2])}
     smtp_attempts = [item for item in recent_300 if item[2] in SMTP_PORTS]
-    p2p_hint_flows = [item for item in recent_300 if is_p2p_hint_port(item[2])]
-    p2p_peers = {item[1] for item in p2p_hint_flows}
-    p2p_ports = {item[2] for item in p2p_hint_flows}
+    p2p_candidate_flows = [item for item in recent_300 if event_is_p2p_candidate(item)]
+    p2p_hint_flows = [item for item in p2p_candidate_flows if is_p2p_hint_port(item[2])]
+    p2p_peers = {item[1] for item in p2p_candidate_flows}
+    p2p_ports = {item[2] for item in p2p_candidate_flows}
     web_fanout_60 = {item[1] for item in recent_60 if item[2] in WEB_SCAN_PORTS}
     web_fanout_300 = {item[1] for item in recent_300 if item[2] in WEB_SCAN_PORTS}
     dst_by_port_60 = collections.defaultdict(set)
@@ -358,8 +388,9 @@ def score_source(src):
 
     if (
         len(p2p_peers) >= P2P_UNIQUE_PEERS
-        and len(p2p_hint_flows) >= P2P_HIGH_PORT_FLOWS
+        and len(p2p_candidate_flows) >= P2P_HIGH_PORT_FLOWS
         and len(p2p_ports) >= P2P_UNIQUE_PORTS
+        and len(p2p_hint_flows) >= 10
     ):
         nft_add_source_quarantine(src, "6h", "p2p-bittorrent")
 
@@ -382,6 +413,15 @@ def alert_is_relevant(alert):
         "scan",
         "malware",
         "trojan",
+        "command and control",
+        "botnet",
+        "backdoor",
+        "beacon",
+        "loader",
+        "downloader",
+        "rat",
+        "coinminer",
+        "cryptominer",
         "smtp",
         "spam",
         "bittorrent",
@@ -396,6 +436,98 @@ def alert_is_relevant(alert):
 def alert_is_p2p(alert):
     text = alert_text(alert)
     return any(keyword in text for keyword in ("bittorrent", "torrent", "p2p", "dht", "tracker"))
+
+
+def alert_is_malware_c2(alert):
+    text = alert_text(alert)
+    if re.search(r"\b(?:c2|cnc)\b", text):
+        return True
+    return any(
+        keyword in text
+        for keyword in (
+            "command and control",
+            "botnet",
+            "malware",
+            "trojan",
+            "backdoor",
+            "beacon",
+            "loader",
+            "downloader",
+            "rat",
+            "coinminer",
+            "cryptominer",
+            "agent tesla",
+            "asyncrat",
+            "njrat",
+            "remcos",
+            "quasar",
+            "redline",
+            "stealc",
+            "mirai",
+            "gafgyt",
+            "mozi",
+            "xworm",
+        )
+    )
+
+
+def alert_is_high_confidence_malware_c2(alert):
+    text = alert_text(alert)
+    if re.search(r"\b(?:c2|cnc)\b", text):
+        return True
+    return any(
+        keyword in text
+        for keyword in (
+            "command and control",
+            "botnet",
+            "backdoor",
+            "beacon",
+            "loader",
+            "downloader",
+            "coinminer",
+            "cryptominer",
+            "agent tesla",
+            "asyncrat",
+            "njrat",
+            "remcos",
+            "quasar",
+            "redline",
+            "stealc",
+            "mirai",
+            "gafgyt",
+            "mozi",
+            "xworm",
+        )
+    )
+
+
+def record_malware_c2_event(src, dst, event_type, alert):
+    t = now()
+    malware_c2_events[src].append((t, dst))
+    prune_deque(malware_c2_events[src], WINDOW_300)
+
+    try:
+        severity = int(alert.get("severity", 3))
+    except (TypeError, ValueError):
+        severity = 3
+
+    recent = list(malware_c2_events[src])
+    unique_hosts = {item[1] for item in recent}
+
+    if event_type == "drop" or severity <= 1 or alert_is_high_confidence_malware_c2(alert):
+        nft_add_destination_shun(dst, "24h")
+        nft_add_source_quarantine(src, "24h", "malware-c2-high-confidence")
+        return
+
+    if len(recent) >= MALWARE_C2_SEVERE_ALERTS:
+        nft_add_destination_shun(dst, "24h")
+        nft_add_source_quarantine(src, "24h", "malware-c2-repeated")
+        return
+
+    if len(unique_hosts) >= MALWARE_C2_UNIQUE_HOSTS or len(recent) >= MALWARE_C2_ALERTS:
+        nft_add_destination_shun(dst, "12h")
+        nft_add_source_quarantine(src, "12h", "malware-c2")
+        return
 
 
 def record_cdn_probe_event(src, dst, host):
@@ -464,7 +596,12 @@ def record_suricata_event(event):
         return
 
     if alert_is_p2p(alert):
+        nft_add_destination_shun(dst, P2P_DESTINATION_SHUN_SECONDS)
         nft_add_source_quarantine(src, "6h", "suricata-p2p-bittorrent")
+        return
+
+    if alert_is_malware_c2(alert):
+        record_malware_c2_event(src, dst, event.get("event_type"), alert)
         return
 
     t = now()
