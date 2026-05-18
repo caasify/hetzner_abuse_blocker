@@ -97,6 +97,11 @@ is_project_dir() {
         [ -f "$dir/nftables.conf" ] &&
         [ -f "$dir/egress-guardd.py" ] &&
         [ -f "$dir/config/blocked-dst4.txt" ] &&
+        [ -f "$dir/config/suricata/enable.conf" ] &&
+        [ -f "$dir/config/suricata/disable.conf" ] &&
+        [ -f "$dir/config/suricata/drop.conf" ] &&
+        [ -f "$dir/config/suricata/modify.conf" ] &&
+        [ -f "$dir/config/suricata/local.rules" ] &&
         [ -f "$dir/scripts/anti-abuse-restore.sh" ] &&
         [ -f "$dir/scripts/anti-abuse-static-dst-refresh.sh" ] &&
         [ -f "$dir/scripts/anti-abuse-cloudflare-refresh.sh" ] &&
@@ -282,10 +287,15 @@ backup_existing_nftables() {
 }
 
 install_project_files() {
-    mkdir -p "$STATE_DIR" /var/log/suricata /run/anti-abuse /usr/local/share/anti-abuse
+    mkdir -p "$STATE_DIR" /var/log/suricata /run/anti-abuse /usr/local/share/anti-abuse /etc/suricata/local.d
 
     install -m 0644 "$PROJECT_DIR/nftables.conf" /etc/nftables.conf
     install -m 0644 "$PROJECT_DIR/config/blocked-dst4.txt" /usr/local/share/anti-abuse/blocked-dst4.txt
+    install -m 0644 "$PROJECT_DIR/config/suricata/enable.conf" /etc/suricata/enable.conf
+    install -m 0644 "$PROJECT_DIR/config/suricata/disable.conf" /etc/suricata/disable.conf
+    install -m 0644 "$PROJECT_DIR/config/suricata/drop.conf" /etc/suricata/drop.conf
+    install -m 0644 "$PROJECT_DIR/config/suricata/modify.conf" /etc/suricata/modify.conf
+    install -m 0644 "$PROJECT_DIR/config/suricata/local.rules" /etc/suricata/local.d/inside-vm-egress-guard.rules
     install -m 0755 "$PROJECT_DIR/egress-guardd.py" /usr/local/sbin/egress-guardd
     install -m 0755 "$PROJECT_DIR/scripts/anti-abuse-static-dst-refresh.sh" /usr/local/sbin/anti-abuse-static-dst-refresh.sh
     install -m 0755 "$PROJECT_DIR/scripts/anti-abuse-restore.sh" /usr/local/sbin/anti-abuse-restore.sh
@@ -333,11 +343,19 @@ configure_suricata() {
     fi
 
     if command -v suricata-update >/dev/null 2>&1; then
+        suricata-update update-sources >/dev/null 2>&1 || true
+        suricata-update enable-source et/open >/dev/null 2>&1 || true
         if command -v timeout >/dev/null 2>&1; then
-            timeout 120 suricata-update || true
+            timeout 120 suricata-update \
+                --suricata-conf /etc/suricata/suricata.yaml \
+                --local /etc/suricata/local.d/inside-vm-egress-guard.rules || true
         else
-            suricata-update || true
+            suricata-update \
+                --suricata-conf /etc/suricata/suricata.yaml \
+                --local /etc/suricata/local.d/inside-vm-egress-guard.rules || true
         fi
+    else
+        log "suricata-update not found; local P2P and malware/C2 rule tuning was installed but not merged."
     fi
 
     mkdir -p /etc/suricata/rules
