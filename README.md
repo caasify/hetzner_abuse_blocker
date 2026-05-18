@@ -24,6 +24,7 @@ Inside-VM Egress Guard aims to reduce those incidents with a strict but general-
 
 - `nftables` for kernel-level enforcement and timed quarantine sets.
 - Suricata in inline `NFQUEUE` IPS mode.
+- A managed Suricata abuse policy with `enable.conf`, `drop.conf`, and local anti-abuse rules.
 - `egress-guardd`, a Python detector daemon that watches `conntrack` flows and Suricata EVE JSON.
 - CDN IP range refresh for Cloudflare, Fastly, and CloudFront as an extra-sensitive abuse signal.
 - A managed `nftables` destination blocklist for reserved and operator-supplied IPv4 ranges.
@@ -47,6 +48,7 @@ Traffic inspected:
 - SSH, Telnet, RDP, and VNC brute-force fanout.
 - Direct SMTP abuse on `25`, `465`, `587`, and `2525`.
 - BitTorrent/P2P behavior using Suricata alerts and high-port peer fanout heuristics.
+- Malware and command-and-control activity using Suricata alerts plus detector quarantine thresholds.
 - Inbound Telnet exposure on `23` and `2323`.
 - Repeated web exploit probing based on Suricata alerts.
 
@@ -67,6 +69,7 @@ Examples:
 - Repeated management-port fanout to many hosts: quarantine for brute-force behavior.
 - Repeated SMTP attempts: quarantine for spam behavior.
 - Repeated BitTorrent/P2P signals: quarantine for P2P abuse.
+- High-confidence malware/C2 signatures: quarantine the source quickly and shun the destination.
 
 For routed VPN traffic, the guard tries to quarantine the internal VPN client IP instead of the whole VM when that source is visible before NAT.
 
