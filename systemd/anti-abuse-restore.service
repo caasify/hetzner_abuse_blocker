@@ -1,0 +1,8 @@
+[Unit]
+Description=Restore inside-VM anti-abuse IDS/IPS firewall
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/anti-abuse-restore.sh

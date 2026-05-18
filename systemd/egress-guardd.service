@@ -1,0 +1,13 @@
+[Unit]
+Description=Outbound abuse detector and nftables quarantine daemon
+After=network-online.target nftables.service suricata.service cloudflare-ip-refresh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/egress-guardd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# Abuse report files
+abuse/
+ips/abuse_log*.txt
+otherabuse.txt
+
+# Local/generated files
+.DS_Store
+__pycache__/
+*.py[cod]
+dist/

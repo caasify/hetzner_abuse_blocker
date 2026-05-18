@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh CDN IP ranges daily
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=1d
+AccuracySec=15m
+
+[Install]
+WantedBy=timers.target

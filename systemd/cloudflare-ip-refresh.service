@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh CDN IP ranges for anti-abuse firewall
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/anti-abuse-cloudflare-refresh.sh

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run anti-abuse restore every 20 seconds
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=20
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
