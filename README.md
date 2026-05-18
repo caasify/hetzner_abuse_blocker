@@ -39,7 +39,7 @@ Traffic inspected:
 
 ## Abuse Types Covered
 
-- Generic outbound port scans, net scans, same-port fanout scans, web-port fanout scans, and ICMP ping sweeps against any destination range.
+- Generic outbound port scans, net scans, same-port fanout scans, and web-port fanout scans against any destination range.
 - Cloudflare/Fastly/CloudFront clean-IP scanning with lower provider-specific thresholds.
 - Repeated TLS/SNI or HTTP Host matrix probing against any destination range.
 - Repeated TLS/SNI matrix probing against CDN edge ranges with lower provider-specific thresholds.
@@ -63,7 +63,6 @@ Examples:
 - Many unique destination ports in a short window: quarantine for port scanning.
 - Many unique destination IPs on the same port: quarantine for generic same-port fanout scanning.
 - Many unique destination IPs on web/CDN-style ports such as `443`, `8080`, `8443`, and `2053`: quarantine for generic web fanout scanning.
-- Many unique ICMP echo destinations in a short window: quarantine for ping-sweep scanning.
 - Many unique CDN destination IPs on `443` or alternate CDN ports: quarantine faster using provider-specific thresholds.
 - The same Host/SNI value tested against many destination IPs: quarantine for generic clean-IP or origin-finding behavior.
 - Repeated management-port fanout to many hosts: quarantine for brute-force behavior.

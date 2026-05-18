@@ -21,7 +21,6 @@ SMTP_PORTS = {25, 465, 587, 2525}
 SSH_PORT = 22
 BRUTE_FORCE_PORTS = {22, 23, 2323, 3389}
 P2P_HINT_PORTS = set(range(6881, 7000)) | {6969, 51413}
-ICMP_PSEUDO_PORT = -1
 CLOUDFLARE_SCAN_PORTS = {80, 443, 8080, 8443, 8880, 2052, 2053, 2082, 2083, 2086, 2087, 2095, 2096}
 CDN_SCAN_PORTS = CLOUDFLARE_SCAN_PORTS | {2408}
 WEB_SCAN_PORTS = CDN_SCAN_PORTS
@@ -38,7 +37,6 @@ GENERIC_WEB_FANOUT_UNIQUE_IPS_300 = 180
 GENERIC_SAME_PORT_UNIQUE_IPS_60 = 100
 GENERIC_SAME_PORT_UNIQUE_IPS_300 = 250
 GENERIC_SAME_HOST_UNIQUE_IPS = 25
-PING_SWEEP_UNIQUE_IPS_60 = 50
 CLOUDFLARE_UNIQUE_IPS = 75
 CDN_UNIQUE_IPS_60 = 50
 CDN_UNIQUE_IPS_300 = 120
@@ -249,10 +247,6 @@ def record_conntrack_line(line):
         proto = "tcp"
     elif " udp " in line or line.startswith("[NEW] udp") or line.startswith("[UPDATE] udp"):
         proto = "udp"
-    elif " icmpv6 " in line or " ipv6-icmp " in line or line.startswith("[NEW] icmpv6") or line.startswith("[UPDATE] icmpv6"):
-        proto = "icmpv6"
-    elif " icmp " in line or line.startswith("[NEW] icmp") or line.startswith("[UPDATE] icmp"):
-        proto = "icmp"
     else:
         return
 
@@ -264,15 +258,12 @@ def record_conntrack_line(line):
     if not src or not dst:
         return
 
-    if proto in ("icmp", "icmpv6"):
-        dport = ICMP_PSEUDO_PORT
-    else:
-        if not dport_raw:
-            return
-        try:
-            dport = int(dport_raw)
-        except ValueError:
-            return
+    if not dport_raw:
+        return
+    try:
+        dport = int(dport_raw)
+    except ValueError:
+        return
 
     key = flow_key(src, dst, proto, sport or "0", dport)
 
@@ -294,7 +285,6 @@ def score_source(src):
 
     unique_ports = {item[2] for item in recent_60}
     unique_dst_60 = {item[1] for item in recent_60}
-    ping_sweep_dst = {item[1] for item in recent_60 if item[2] == ICMP_PSEUDO_PORT}
     ssh_dst = {item[1] for item in recent_300 if item[2] == SSH_PORT}
     bruteforce_dst = {item[1] for item in recent_300 if is_bruteforce_port(item[2])}
     smtp_attempts = [item for item in recent_300 if item[2] in SMTP_PORTS]
@@ -325,10 +315,6 @@ def score_source(src):
 
     if len(unique_ports) >= PORT_SCAN_UNIQUE_PORTS:
         nft_add_source_quarantine(src, "1h", "port-scan")
-        return
-
-    if len(ping_sweep_dst) >= PING_SWEEP_UNIQUE_IPS_60:
-        nft_add_source_quarantine(src, "1h", "icmp-ping-sweep")
         return
 
     if len(unique_dst_60) >= NET_SCAN_UNIQUE_IPS:
